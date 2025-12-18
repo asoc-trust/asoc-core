@@ -1,0 +1,23 @@
+{
+  "name": "@asoc/trust-proxy",
+  "version": "0.1.0",
+  "description": "Express middleware for x402 transaction validation with A-SOC audit tickets",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --test",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@asoc/ticket-issuer": "workspace:*",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
