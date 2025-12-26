@@ -16,8 +16,11 @@
     "express": "^4.21.2"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "^2.0.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
-    "typescript": "^5.7.0"
+    "ai": "^5.0.116",
+    "typescript": "^5.7.0",
+    "zod": "^4.2.1"
   }
 }

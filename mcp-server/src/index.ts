@@ -1,6 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { TicketIssuer } from '@asoc/ticket-issuer';
+import { db, agents, certifications, healthMetrics } from '@asoc/database';
+import { eq, desc, and, gte } from 'drizzle-orm';
+import { AgentCardSchema, AgentPulseSchema } from './schemas.js';
 import {
   AgentRecord,
   TrustScore,
@@ -11,118 +14,157 @@ import {
 } from './types.js';
 
 /**
- * In-memory agent registry (replace with database in production)
+ * Helper to map DB result to AgentRecord
  */
-class AgentRegistry {
-  private agents: Map<string, AgentRecord> = new Map();
-
-  constructor() {
-    // Seed with demo agents
-    this.seedDemoAgents();
-  }
-
-  private seedDemoAgents() {
-    const demoAgents: AgentRecord[] = [
-      {
-        agentId: 'agent-12345',
-        auditLevel: 'Gold',
-        trustScore: 85,
-        organization: 'Acme AI Corp',
-        metadata: {
-          name: 'Finance Agent Alpha',
-          description: 'Autonomous trading and portfolio management agent',
-          capabilities: ['trading', 'portfolio-analysis', 'risk-assessment'],
-          verified_domain: 'acmeai.com',
-        },
-        certification: {
-          certified_at: Date.now() - 86400000 * 30, // 30 days ago
-          expires_at: Date.now() + 86400000 * 335, // 335 days from now
-          certifier: 'asoc-authority.com',
-          mva_level: 5,
-        },
-        health: {
-          uptime_percentage: 99.8,
-          avg_latency_ms: 120,
-          error_rate: 0.002,
-          total_transactions: 15420,
-          last_active: Date.now() - 3600000, // 1 hour ago
-        },
-        killSwitchActive: false,
-        constraints: {
-          max_op_value: 100.0,
-          allowed_mcp_servers: ['finance-node', 'trading-node', 'legal-node'],
-          max_ops_per_hour: 1000,
-        },
+async function getAgentRecord(agentId: string): Promise<AgentRecord | null> {
+  const agent = await db.query.agents.findFirst({
+    where: eq(agents.id, agentId),
+    with: {
+      certifications: {
+        orderBy: (certs, { desc }) => [desc(certs.issuedAt)],
+        limit: 1,
       },
-      {
-        agentId: 'agent-67890',
-        auditLevel: 'Silver',
-        trustScore: 68,
-        organization: 'Beta Bots Inc',
-        metadata: {
-          name: 'Customer Service Bot',
-          description: 'AI customer support agent',
-          capabilities: ['customer-support', 'ticket-management', 'sentiment-analysis'],
-        },
-        certification: {
-          certified_at: Date.now() - 86400000 * 15,
-          expires_at: Date.now() + 86400000 * 350,
-          certifier: 'asoc-authority.com',
-          mva_level: 3,
-        },
-        health: {
-          uptime_percentage: 98.5,
-          avg_latency_ms: 250,
-          error_rate: 0.012,
-          total_transactions: 8920,
-          last_active: Date.now() - 7200000, // 2 hours ago
-        },
-        killSwitchActive: false,
-        constraints: {
-          max_op_value: 10.0,
-          allowed_mcp_servers: ['support-node', 'crm-node'],
-          max_ops_per_hour: 500,
-        },
+      healthMetrics: {
+        orderBy: (metrics, { desc }) => [desc(metrics.recordedAt)],
+        limit: 1,
       },
-    ];
+    },
+  });
 
-    demoAgents.forEach((agent) => this.agents.set(agent.agentId, agent));
-  }
+  if (!agent) return null;
 
-  getAgent(agentId: string): AgentRecord | undefined {
-    return this.agents.get(agentId);
-  }
+  const latestCert = agent.certifications[0];
+  const latestHealth = agent.healthMetrics[0];
+  const metadata = agent.metadata as any || {};
 
-  getAllAgents(): AgentRecord[] {
-    return Array.from(this.agents.values());
-  }
-
-  updateAgent(agentId: string, updates: Partial<AgentRecord>) {
-    const agent = this.agents.get(agentId);
-    if (agent) {
-      this.agents.set(agentId, { ...agent, ...updates });
-    }
-  }
-
-  activateKillSwitch(agentId: string) {
-    const agent = this.agents.get(agentId);
-    if (agent) {
-      agent.killSwitchActive = true;
-      agent.constraints.max_op_value = 0; // Prevent all transactions
-    }
-  }
+  return {
+    agentId: agent.id,
+    auditLevel: (agent.auditLevel as any) || 'Bronze',
+    trustScore: agent.trustScore || 0,
+    organization: agent.organization,
+    metadata: {
+      name: agent.name,
+      description: metadata.description || '',
+      capabilities: metadata.capabilities || [],
+      verified_domain: metadata.verified_domain,
+    },
+    certification: {
+      certified_at: latestCert?.issuedAt ? new Date(latestCert.issuedAt).getTime() : 0,
+      expires_at: latestCert?.expiresAt ? new Date(latestCert.expiresAt).getTime() : 0,
+      certifier: latestCert?.issuer || 'unknown',
+      mva_level: latestCert?.mvaLevel || 0,
+    },
+    health: {
+      uptime_percentage: latestHealth?.uptimePercentage || 0,
+      avg_latency_ms: latestHealth?.avgLatencyMs || 0,
+      error_rate: latestHealth?.errorRate || 0,
+      total_transactions: 0,
+      last_active: latestHealth?.recordedAt ? new Date(latestHealth.recordedAt).getTime() : 0,
+    },
+    killSwitchActive: agent.killSwitchActive || false,
+    constraints: metadata.constraints || {
+      max_op_value: 0,
+      allowed_mcp_servers: [],
+    },
+  };
 }
 
 /**
  * Creates and configures the A-SOC MCP server
  */
 export function createAsocMcpServer(issuer: TicketIssuer) {
-  const registry = new AgentRegistry();
-
   const server = new McpServer({
     name: 'asoc-audit-server',
     version: '0.1.0',
   });
+
+  /**
+   * Tool: get_agent_card
+   * 
+   * Retrieve the public "Passport" (AgentCard) for an agent.
+   * This is used by other agents to verify identity before interaction.
+   */
+  server.registerTool(
+    'get_agent_card',
+    {
+      title: 'Get Agent Card',
+      description: 'Retrieve the verifiable AgentCard (Passport) for an agent',
+      inputSchema: {
+        agentId: z.string().describe('The agent ID to retrieve'),
+      },
+      outputSchema: AgentCardSchema,
+    },
+    async ({ agentId }) => {
+      const agent = await getAgentRecord(agentId);
+
+      if (!agent) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+
+      // Map internal record to public AgentCard
+      const card = {
+        id: agent.agentId,
+        name: agent.metadata.name,
+        organization: agent.organization,
+        version: '1.0.0', // Placeholder
+        audit_level: agent.auditLevel as any,
+        trust_score: agent.trustScore,
+        certified_at: new Date(agent.certification.certified_at).toISOString(),
+        expires_at: new Date(agent.certification.expires_at).toISOString(),
+        capabilities: agent.metadata.capabilities,
+        constraints: {
+          max_transaction_value: agent.constraints.max_op_value,
+          allowed_domains: [], // Placeholder
+          requires_human_approval: false,
+        },
+        issuer: 'asoc-authority.com',
+        signature: 'simulated_signature_0x123456789', // Placeholder
+      };
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(card) }],
+        structuredContent: card,
+      };
+    }
+  );
+
+  /**
+   * Tool: check_agent_pulse
+   * 
+   * Get real-time behavioral health metrics.
+   */
+  server.registerTool(
+    'check_agent_pulse',
+    {
+      title: 'Check Agent Pulse',
+      description: 'Get real-time health and behavioral metrics',
+      inputSchema: {
+        agentId: z.string(),
+      },
+      outputSchema: AgentPulseSchema,
+    },
+    async ({ agentId }) => {
+      const agent = await getAgentRecord(agentId);
+      if (!agent) throw new Error(`Agent ${agentId} not found`);
+
+      const pulse = {
+        agent_id: agent.agentId,
+        status: agent.killSwitchActive ? 'critical' : 'healthy',
+        metrics: {
+          uptime_24h: agent.health.uptime_percentage,
+          error_rate_1h: agent.health.error_rate,
+          avg_latency_ms: agent.health.avg_latency_ms,
+          spend_velocity_1h: 0, // Placeholder
+        },
+        last_heartbeat: new Date(agent.health.last_active).toISOString(),
+      };
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(pulse) }],
+        structuredContent: pulse as any,
+      };
+    }
+  );
 
   /**
    * Tool: is_agent_certified
@@ -146,7 +188,7 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
       },
     },
     async ({ agentId }) => {
-      const agent = registry.getAgent(agentId);
+      const agent = await getAgentRecord(agentId);
 
       if (!agent) {
         const output = { certified: false, agentId };
@@ -201,7 +243,7 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
       },
     },
     async ({ agentId, includeHealth }) => {
-      const agent = registry.getAgent(agentId);
+      const agent = await getAgentRecord(agentId);
 
       if (!agent) {
         const output = {
@@ -257,9 +299,10 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
             : 'reject',
       };
 
-      const output = includeHealth
-        ? { ...trustScore, details: agent.health }
-        : trustScore;
+      const output = {
+        ...trustScore,
+        details: includeHealth ? agent.health : undefined,
+      };
 
       return {
         content: [{ type: 'text', text: JSON.stringify(output) }],
@@ -277,7 +320,7 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
     'issue_audit_ticket',
     {
       title: 'Issue Audit Ticket',
-      description: 'Generate a signed JWT audit ticket for x402 transactions',
+      description: 'Generate signed JWT ticket for x402 transactions',
       inputSchema: IssueTicketRequest.shape,
       outputSchema: {
         success: z.boolean(),
@@ -287,53 +330,43 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
         error: z.string().optional(),
       },
     },
-    async ({ agentId, validitySeconds = 300 }) => {
-      const agent = registry.getAgent(agentId);
+    async ({ agentId, validitySeconds }) => {
+      const agent = await getAgentRecord(agentId);
 
       if (!agent) {
-        const output = {
-          success: false,
-          agentId,
-          error: 'Agent not found in registry',
-        };
         return {
-          content: [{ type: 'text', text: JSON.stringify(output) }],
-          structuredContent: output,
+          content: [{ type: 'text', text: 'Agent not found' }],
+          structuredContent: {
+            success: false,
+            agentId,
+            error: 'Agent not found',
+          },
         };
       }
 
       if (agent.killSwitchActive) {
-        const output = {
-          success: false,
-          agentId,
-          error: 'Agent kill switch is active',
-        };
         return {
-          content: [{ type: 'text', text: JSON.stringify(output) }],
-          structuredContent: output,
+          content: [{ type: 'text', text: 'Agent kill switch active' }],
+          structuredContent: {
+            success: false,
+            agentId,
+            error: 'Agent kill switch active',
+          },
         };
       }
 
-      // Generate ticket
       const ticket = issuer.generateTicket({
         agentId: agent.agentId,
         auditLevel: agent.auditLevel,
-        constraints: {
-          ...agent.constraints,
-          kill_switch_active: false,
-        },
-        validityDuration: validitySeconds,
-        metadata: {
-          organization: agent.organization,
-          trust_score: agent.trustScore,
-        },
+        constraints: agent.constraints,
+        validitySeconds,
       });
 
       const output = {
         success: true,
         ticket,
-        agentId: agent.agentId,
-        expiresIn: validitySeconds,
+        agentId,
+        expiresIn: validitySeconds || 300,
       };
 
       return {
@@ -351,56 +384,46 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
   server.registerTool(
     'query_agents',
     {
-      title: 'Query Certified Agents',
-      description: 'Search for agents by trust score, audit level, or capabilities',
+      title: 'Query Agents',
+      description: 'Search for agents by criteria',
       inputSchema: QueryAgentsRequest.shape,
       outputSchema: {
-        results: z.array(
-          z.object({
-            agentId: z.string(),
-            organization: z.string(),
-            auditLevel: z.string(),
-            trustScore: z.number(),
-            capabilities: z.array(z.string()),
-          })
-        ),
+        results: z.array(z.any()),
         total: z.number(),
       },
     },
-    async ({ minTrustScore = 0, auditLevel, capabilities, limit = 10 }) => {
-      let agents = registry.getAllAgents();
+    async ({ minTrustScore, auditLevel, capabilities, limit }) => {
+      const conditions = [];
+      if (minTrustScore) conditions.push(gte(agents.trustScore, minTrustScore));
+      if (auditLevel) conditions.push(eq(agents.auditLevel, auditLevel));
+      
+      const allAgents = await db.query.agents.findMany({
+        where: conditions.length > 0 ? and(...conditions) : undefined,
+        limit: limit || 10,
+      });
 
-      // Apply filters
-      if (minTrustScore > 0) {
-        agents = agents.filter((a) => a.trustScore >= minTrustScore);
-      }
-
-      if (auditLevel) {
-        agents = agents.filter((a) => a.auditLevel === auditLevel);
-      }
-
+      let results = allAgents;
       if (capabilities && capabilities.length > 0) {
-        agents = agents.filter((a) =>
-          capabilities.every((cap) => a.metadata.capabilities.includes(cap))
-        );
+        results = results.filter(a => {
+          const caps = (a.metadata as any)?.capabilities || [];
+          return capabilities.every(c => caps.includes(c));
+        });
       }
 
-      // Filter out kill-switched agents
-      agents = agents.filter((a) => !a.killSwitchActive);
-
-      const results = agents.slice(0, limit).map((a) => ({
-        agentId: a.agentId,
+      const mappedResults = results.map((a) => ({
+        agentId: a.id,
         organization: a.organization,
         auditLevel: a.auditLevel,
         trustScore: a.trustScore,
-        capabilities: a.metadata.capabilities,
+        capabilities: (a.metadata as any)?.capabilities || [],
       }));
 
-      const output = { results, total: agents.length };
-
       return {
-        content: [{ type: 'text', text: JSON.stringify(output) }],
-        structuredContent: output,
+        content: [{ type: 'text', text: JSON.stringify(mappedResults) }],
+        structuredContent: {
+          results: mappedResults,
+          total: mappedResults.length,
+        },
       };
     }
   );
@@ -414,7 +437,7 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
     'activate_kill_switch',
     {
       title: 'Activate Kill Switch',
-      description: 'Emergency disable an agent and revoke all tickets',
+      description: 'Emergency disable an agent',
       inputSchema: KillSwitchRequest.shape,
       outputSchema: {
         success: z.boolean(),
@@ -423,23 +446,10 @@ export function createAsocMcpServer(issuer: TicketIssuer) {
         reason: z.string(),
       },
     },
-    async ({ agentId, reason, revokeTickets = true }) => {
-      const agent = registry.getAgent(agentId);
-
-      if (!agent) {
-        const output = {
-          success: false,
-          agentId,
-          timestamp: Date.now(),
-          reason: 'Agent not found',
-        };
-        return {
-          content: [{ type: 'text', text: JSON.stringify(output) }],
-          structuredContent: output,
-        };
-      }
-
-      registry.activateKillSwitch(agentId);
+    async ({ agentId, reason }) => {
+      await db.update(agents)
+        .set({ killSwitchActive: true })
+        .where(eq(agents.id, agentId));
 
       const output = {
         success: true,
