@@ -3,7 +3,10 @@
 import 'dotenv/config';
 import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { TicketIssuer } from '@asoc/ticket-issuer';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { TicketIssuer } from '@asoc/sdk';
+import { z } from 'zod';
 import { createAsocMcpServer } from './index.js';
 
 const PORT = process.env.PORT || 3100;

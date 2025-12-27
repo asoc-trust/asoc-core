@@ -1,3 +1,3 @@
-export * from './db';
-export * from './schema';
+export * from './db.js';
+export * from './schema.js';
 export * from 'drizzle-orm';

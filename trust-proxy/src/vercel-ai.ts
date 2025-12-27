@@ -3,7 +3,9 @@ import {
   LanguageModelV2Middleware as LanguageModelV1Middleware,
   LanguageModelV2StreamPart as LanguageModelV1StreamPart
 } from '@ai-sdk/provider';
-import { TicketIssuer } from '@asoc/ticket-issuer';
+import { CoreMessage, generateText, LanguageModel } from 'ai';
+import { TicketIssuer } from '@asoc/sdk';
+import { z } from 'zod';
 
 interface AsocAiMiddlewareOptions {
   issuer: TicketIssuer;

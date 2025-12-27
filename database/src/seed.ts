@@ -1,6 +1,6 @@
-import 'dotenv/config';
-import { db } from './db';
-import { agents, certifications, healthMetrics } from './schema';
+import dotenv from 'dotenv';
+import { db } from './db.js';
+import { agents, certifications, healthMetrics } from './schema.js';
 
 async function seed() {
   console.log('Seeding database...');

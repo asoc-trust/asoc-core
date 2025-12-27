@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { TicketIssuer, ValidationResult } from '@asoc/ticket-issuer';
+import { TicketIssuer, ValidationResult } from '@asoc/sdk';
 
 /**
  * Configuration for the trust proxy middleware
