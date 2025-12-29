@@ -13,7 +13,7 @@ npm install @asoc/trust-proxy
 ```typescript
 import express from 'express';
 import { createTrustProxy } from '@asoc/trust-proxy';
-import { TicketIssuer } from '@asoc/ticket-issuer';
+import { TicketIssuer } from '@asoc/sdk';
 
 const app = express();
 app.use(express.json());
