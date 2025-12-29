@@ -1,0 +1,30 @@
+{
+  "name": "basic-x402-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Complete x402 handshake example with A-SOC trust verification",
+  "scripts": {
+    "build": "tsc",
+    "dev:buyer": "tsx src/agent-buyer.ts",
+    "dev:seller": "tsx src/agent-seller.ts",
+    "start:seller": "node dist/agent-seller.js",
+    "start:buyer": "node dist/agent-buyer.js",
+    "demo": "concurrently --kill-others-on-fail \"npm run start:seller\" \"sleep 3 && npm run start:buyer\"",
+    "dev": "concurrently \"npm run dev:seller\" \"npm run dev:buyer\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@asoc/sdk": "0.1.0",
+    "@asoc/trust-proxy": "0.1.0",
+    "express": "^4.21.2",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}
